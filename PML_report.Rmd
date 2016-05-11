@@ -1,0 +1,119 @@
+---
+title: "Using Accelerometer Data to Predict How an Exercise was Done"
+author: "Vikram Radhakrishnan"
+output: html_document
+---
+
+## Synopsis
+Devices such as Jawbone Up, Nike FuelBand, and Fitbit are equipped with accelerometers which can collect a large amount of data about an individual's personal activity, recorded during periods of training or exercise, relatively inexpensively. One fairly common use of this data is to quantify how much of a particular activity they do, but they rarely quantify how well they do it. The aim of this project is to predict how well a particular exercise was done, using a vast amount of data obtained from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. The participants asked were to perform barbell lifts correctly and incorrectly in 5 different ways. For more information about this study, please visit: [Human Activity Recognition](http://groupware.les.inf.puc-rio.br/har).
+
+## Data Source
+The data for this project were obtained from the following links:
+
+1. Link to [Training Data](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv).
+
+2. Link to [Test Data](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv).
+
+*Note: The goal of this project will be to build a predictor on a fraction of the training data set, which will then be validated on the remaining portion of the training data set. Based on the validation dataset results, a predictor algorithm will be selected to predict the test data set.*
+
+## Procedure
+
+#### Loading Data
+*Note: Certain packages are required in order to reproduce the analysis shown here. These are the caret, rpart and rattle packages. PBefore running this analysis, please install packages using the command: install.package("packagename")*
+
+```{r Load Packages, echo=TRUE, cache=TRUE}
+library(caret)
+library(rpart)
+library(rattle)
+```
+
+We first check if the data is already downloaded and available to us. If not, we download the csv files and read it into R with the read.csv() function.
+```{r Load Data, echo=TRUE, cache=TRUE}
+if(!file.exists("pml-training.csv")) {
+  fileURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+  download.file(fileURL, destfile = "pml-training.csv", method = "curl")
+}
+
+if(!file.exists("pml-testing.csv")) {
+  fileURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+  download.file(fileURL, destfile = "pml-testing.csv", method = "curl")
+}
+
+## Read the csv files into R
+training <- read.csv("pml-training.csv", header=TRUE, sep = ",", na.strings = c("","NA"), stringsAsFactors = FALSE)
+testing <- read.csv("pml-testing.csv", header=TRUE, sep = ",", na.strings = c("","NA"), stringsAsFactors = FALSE)
+```
+
+#### Data Partitioning
+The training data set is fairly large - it has over 19000 measurements. So it would be reasonable to use about 75% of the training set to train a predictor on, and then validate the predictor on the remaining 25%. We use the createDataPartition to do the splitting.
+
+```{r Split Data, echo=TRUE, cache=TRUE}
+set.seed(5390)
+inTrain <- createDataPartition(y=training$classe, p=0.75, list=F)
+myTrain <- training[inTrain, ]
+myValidate <- training[-inTrain, ]
+```
+
+#### Cleaning Data
+There are 160 variables in the training dataset. Not all of these variables will be useful to us in building a predictor. In order to select only the most useful variables, we will remove all the variables that have near zero variance and that are mostly NAs. From the training data set it is also apparent that not all the data relates to accelerometer measurements. Some of the data are user names and timestamps, etc. Assuming that only the accelerometer measurements should be enough to make predictions, we will therefore also discard the first seven columns of the data.
+
+```{r Clean Data, echo=TRUE, cache=TRUE}
+## Remove the variables that are unnecessary for prediction (First seven in this case).
+myTrain <- myTrain[c(-1:-7)]
+
+## Remove Near Zero Variance (NZV) variables.
+NZV <- nearZeroVar(myTrain)
+myTrain <- myTrain[, -NZV]
+
+## Remove variables that are mostly NAs.
+## In this scenario, if a column is more than 80% NA it will be removed
+goodCols <- names(myTrain[sapply(myTrain, function(x) mean(sum(is.na(x)))) < 0.2])
+myTrain <- myTrain[,goodCols]
+
+## Now do the same for the validation set and test set
+## Note that only the NAs and NZVs from the training set are used
+myValidate <- myValidate[c(-1:-7)]
+myValidate <- myValidate[, -NZV]
+myValidate <- myValidate[, goodCols]
+
+testing <- testing[c(-1:-7)]
+testing <- testing[, -NZV]
+testing <- testing[, goodCols[-53]] # Leaving out the outcome here
+```
+
+
+#### Preprocessing Data
+Excluding the classe variable which is the outcome, we have 52 predictors to work with. There could well be some very highly correlated predictors. Here we examine whether there exist such highly correlated predictors in our new dataset. 
+
+```{r Examine Data, echo=TRUE, cache=TRUE}
+M <- abs(cor(myTrain[-53]))
+diag(M) <- 0 # Ignore self-correlation
+which(M > 0.9, arr.ind=T)
+```
+
+Indeed there are several highly correlated variables. Using Principal Component Analysis (PCA) we can capture most of the variability using some combination of the predictor variables. We will therefore include PCA preprocessing in our model constructor.
+
+#### Building the Model
+For our first attempt at building a predictor, we will use a decision tree algorithm.
+
+```{r Model Building 1, echo=TRUE, cache=TRUE}
+modelFitTree <- train(classe ~ ., data=myTrain, preProcess="pca", method="rpart")
+confusionMatrix(myValidate$classe, predict(modelFitTree,myValidate))
+
+## Display the decision tree
+fancyRpartPlot(modelFitTree$finalModel)
+```
+
+Random Forest algorithms are far superior to most predictor algorithms in terms of accuracy, which is why they are often used in machine learning competitions. Their downside is the intensive computation power they require. A Random Forest algorithm will average the predictions of several decision trees to come up with a superior prediction. We show here the results of building a predictor with Random Forests.
+
+```{r Model Building, echo=TRUE, cache=TRUE}
+modelFitRF <- train(classe ~ ., data=myTrain, method="rf")
+confusionMatrix(myValidate$classe, predict(modelFitRF,myValidate))
+```
+
+As expected, the accuracy of the Random Forest predictor is much better. So we will use this predictor to predict the outcomes for the test set.
+
+```{r Predictions, echo=TRUE, cache=TRUE}
+solutions <- predict(modelFitRF, testing)
+print(solutions)
+```
